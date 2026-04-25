@@ -1,0 +1,116 @@
+version: 2
+
+project_name: deep-proxy
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: deep-proxy
+    main: ./cmd/deep-proxy
+    binary: deep-proxy
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/JuanCMPDev/deep-proxy/internal/cli.version={{.Version}}
+      - -X github.com/JuanCMPDev/deep-proxy/internal/cli.commit={{.ShortCommit}}
+      - -X github.com/JuanCMPDev/deep-proxy/internal/cli.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Keyless signing via Sigstore — runs automatically in the release workflow
+# because the GitHub OIDC token grants the necessary permissions (id-token: write).
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    output: true
+    artifacts: checksum
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - --yes
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+    - title: Other
+      order: 999
+
+# ── Homebrew tap ─────────────────────────────────────────────────────────────
+# Uncomment once you have:
+#   1. A public repo named  <your-username>/homebrew-tap
+#   2. A PAT secret named   TAP_GITHUB_TOKEN  with repo:write scope
+# Then remove --skip=brew from the release workflow args.
+#
+# brews:
+#   - name: deep-proxy
+#     repository:
+#       owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
+#       name: homebrew-tap
+#       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+#     directory: Formula
+#     homepage: "https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
+#     description: "OpenAI-compatible local proxy for DeepSeek's web backend"
+#     license: MIT
+#     install: |
+#       bin.install "deep-proxy"
+#     test: |
+#       system "#{bin}/deep-proxy", "version"
+
+# ── Scoop bucket (Windows) ────────────────────────────────────────────────────
+# Uncomment once you have a public repo named <your-username>/scoop-bucket.
+# Then remove --skip=scoop from the release workflow args.
+#
+# scoops:
+#   - name: deep-proxy
+#     repository:
+#       owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
+#       name: scoop-bucket
+#       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+#     homepage: "https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
+#     description: "OpenAI-compatible local proxy for DeepSeek's web backend"
+#     license: MIT

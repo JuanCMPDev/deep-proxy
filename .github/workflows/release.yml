@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# id-token: write is required for cosign keyless signing via GitHub OIDC.
+# contents: write is required to upload release assets.
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser needs full history to generate the changelog correctly.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          # Remove --skip=brew,scoop once you've set up the tap repos and
+          # added the TAP_GITHUB_TOKEN secret. See .goreleaser.yaml for details.
+          args: release --clean --skip=brew,scoop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Uncomment when tap repos are ready:
+          # TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          # HOMEBREW_TAP_OWNER: ${{ github.repository_owner }}

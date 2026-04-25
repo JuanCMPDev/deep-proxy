@@ -1,0 +1,30 @@
+# Build artifacts
+bin/
+dist/
+
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Environment / secrets
+.env
+.env.*
+*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Claude Code local settings
+.claude/
+
+# Per-developer build artifacts
+server.log
