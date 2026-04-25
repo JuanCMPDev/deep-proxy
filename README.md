@@ -28,7 +28,7 @@ The hard parts — handled automatically:
 ## Caveats
 
 - Single-user, localhost-only tool. **Don't expose on `0.0.0.0`.**
-- Cloudflare's `cf_clearance` cookie expires every ~30 minutes. Re-run `deep-proxy login` to refresh. (Background headless refresh is implemented but Cloudflare actively blocks headless Chrome — see the roadmap in [BLUEPRINT.md](BLUEPRINT.md).)
+- Cloudflare's `cf_clearance` cookie expires every ~30 minutes. Re-run `deep-proxy login` to refresh. (Background headless refresh is implemented but Cloudflare actively blocks headless Chrome.)
 - DeepSeek's web API doesn't expose `prompt_tokens` — that field is always 0. `completion_tokens` and `total_tokens` are accurate.
 - No tool/function calling and no image inputs (yet).
 - Use at your own risk and respect DeepSeek's terms of service.
@@ -239,8 +239,6 @@ internal/
 ```
 
 The release pipeline is `git tag vX.Y.Z && git push --tags`. GitHub Actions builds binaries for linux/macOS/windows × amd64/arm64, generates checksums, and signs them with sigstore cosign. See [`.goreleaser.yaml`](.goreleaser.yaml).
-
-For pending work see [BLUEPRINT.md](BLUEPRINT.md).
 
 ---
 

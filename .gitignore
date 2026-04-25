@@ -28,3 +28,6 @@ vendor/
 
 # Per-developer build artifacts
 server.log
+
+# Internal roadmap (kept private)
+BLUEPRINT.md
