@@ -12,8 +12,9 @@ import (
 	"github.com/JuanCMPDev/deep-proxy/internal/openai"
 )
 
-// translateSync reads DeepSeek's SSE response (the web API always streams),
-// accumulates all RESPONSE-fragment deltas, and returns a single OpenAI ChatResponse.
+// translateSync reads DeepSeek's SSE response, accumulates RESPONSE-fragment
+// deltas, optionally parses any <tool_call> blocks, and returns one OpenAI
+// ChatResponse.
 func translateSync(upstream *http.Response, requestedModel string) (*openai.ChatResponse, error) {
 	defer upstream.Body.Close()
 
@@ -51,8 +52,6 @@ func translateSync(upstream *http.Response, requestedModel string) (*openai.Chat
 		}
 		if result.Finished {
 			finished = true
-			// Continue draining — server may send a few trailing events
-			// (title, close) before closing the connection.
 		}
 	}
 
@@ -60,9 +59,23 @@ func translateSync(upstream *http.Response, requestedModel string) (*openai.Chat
 		return nil, fmt.Errorf("read upstream stream: %w", err)
 	}
 
+	rawContent := content.String()
+	cleanContent, toolCalls := extractToolCalls(rawContent)
+
 	finishReason := "stop"
-	if !finished && content.Len() == 0 {
+	switch {
+	case len(toolCalls) > 0:
+		finishReason = "tool_calls"
+	case !finished && cleanContent == "":
 		finishReason = "error"
+	}
+
+	msg := openai.Message{Role: "assistant"}
+	if cleanContent != "" {
+		msg.Content = cleanContent
+	}
+	if len(toolCalls) > 0 {
+		msg.ToolCalls = toolCalls
 	}
 
 	return &openai.ChatResponse{
@@ -72,11 +85,10 @@ func translateSync(upstream *http.Response, requestedModel string) (*openai.Chat
 		Model:   requestedModel,
 		Choices: []openai.Choice{{
 			Index:        0,
-			Message:      openai.Message{Role: "assistant", Content: content.String()},
+			Message:      msg,
 			FinishReason: finishReason,
 		}},
 		Usage: openai.Usage{
-			// prompt_tokens is not exposed by DeepSeek's web API; only output is tracked.
 			CompletionTokens: completionTokens,
 			TotalTokens:      completionTokens,
 		},

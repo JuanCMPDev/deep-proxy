@@ -102,6 +102,11 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	h.handleSync(w, resp, &req, start)
 }
 
+// hasTools reports whether the request expects tool-call-aware response handling.
+func hasTools(req *openai.ChatRequest) bool {
+	return len(req.Tools) > 0
+}
+
 func (h *Handler) handleStream(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -116,7 +121,7 @@ func (h *Handler) handleStream(
 		return
 	}
 
-	if err := translateStream(r.Context(), resp, sse, req.Model); err != nil {
+	if err := translateStream(r.Context(), resp, sse, req.Model, hasTools(req)); err != nil {
 		if !errors.Is(err, context.Canceled) {
 			h.log.Warn("stream terminated with error", slog.String("error", err.Error()))
 		}
@@ -126,6 +131,7 @@ func (h *Handler) handleStream(
 	h.log.Info("stream done",
 		slog.String("model", req.Model),
 		slog.Int("messages", len(req.Messages)),
+		slog.Bool("tools", hasTools(req)),
 		slog.Duration("latency", time.Since(start)),
 	)
 }

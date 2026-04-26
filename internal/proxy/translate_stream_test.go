@@ -39,7 +39,7 @@ func TestTranslateStream_DeepSeekFormat(t *testing.T) {
 		t.Fatalf("NewSSEWriter: %v", err)
 	}
 
-	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat"); err != nil {
+	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat", false); err != nil {
 		t.Fatalf("translateStream: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestTranslateStream_BatchFinishSignal(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sse, _ := openai.NewSSEWriter(rec)
 
-	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat"); err != nil {
+	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat", false); err != nil {
 		t.Fatalf("translateStream: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestTranslateStream_MalformedChunkSkipped(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sse, _ := openai.NewSSEWriter(rec)
 
-	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat"); err != nil {
+	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat", false); err != nil {
 		t.Fatalf("translateStream: %v", err)
 	}
 
@@ -131,6 +131,61 @@ func TestTranslateSync_TokensExtracted(t *testing.T) {
 	}
 }
 
+func TestTranslateSync_ToolCallsExtracted(t *testing.T) {
+	lines := []string{
+		`data: {"p":"response/fragments","o":"APPEND","v":[{"id":1,"type":"RESPONSE","content":"I'll list files."}]}`,
+		`data: {"v":" <tool_call name=\"Bash\">{\"command\":\"ls\"}</tool_call>"}`,
+		`data: {"p":"response/status","v":"FINISHED"}`,
+	}
+
+	upstream := fakeDeepSeekSSE(lines)
+	resp, err := translateSync(upstream, "deepseek-chat")
+	if err != nil {
+		t.Fatalf("translateSync: %v", err)
+	}
+	if resp.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("expected finish_reason=tool_calls, got %q", resp.Choices[0].FinishReason)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool_call in message, got %d", len(resp.Choices[0].Message.ToolCalls))
+	}
+	if resp.Choices[0].Message.ToolCalls[0].Function.Name != "Bash" {
+		t.Errorf("expected Bash, got %q", resp.Choices[0].Message.ToolCalls[0].Function.Name)
+	}
+	if !strings.Contains(resp.Choices[0].Message.Content, "I'll list files") {
+		t.Errorf("expected pre-tool reasoning preserved, got %q", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestTranslateStream_ToolModeBuffersAndEmits(t *testing.T) {
+	lines := []string{
+		`data: {"p":"response/fragments","o":"APPEND","v":[{"id":1,"type":"RESPONSE","content":""}]}`,
+		`data: {"v":"<tool_call name=\"Read\">{\"file_path\":\"a.txt\"}</tool_call>"}`,
+		`data: {"p":"response/status","v":"FINISHED"}`,
+	}
+	upstream := fakeDeepSeekSSE(lines)
+	rec := httptest.NewRecorder()
+	sse, _ := openai.NewSSEWriter(rec)
+
+	if err := translateStream(context.Background(), upstream, sse, "deepseek-chat", true); err != nil {
+		t.Fatalf("translateStream: %v", err)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("expected tool_calls in stream body, got:\n%s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Errorf("expected finish_reason=tool_calls, got:\n%s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Errorf("expected [DONE] terminator, got:\n%s", body)
+	}
+	if strings.Contains(body, "<tool_call") {
+		t.Errorf("raw <tool_call> markup leaked to client:\n%s", body)
+	}
+}
+
 func TestTranslateStream_ContextCancellation(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -151,7 +206,7 @@ func TestTranslateStream_ContextCancellation(t *testing.T) {
 		_ = pr.CloseWithError(ctx.Err())
 	}()
 
-	if err := translateStream(ctx, resp, sse, "deepseek-chat"); err == nil {
+	if err := translateStream(ctx, resp, sse, "deepseek-chat", false); err == nil {
 		t.Fatal("expected context error, got nil")
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/JuanCMPDev/deep-proxy/internal/openai"
@@ -18,13 +20,21 @@ var (
 )
 
 // translateStream reads DeepSeek's SSE response, extracts RESPONSE-fragment
-// deltas via parseDeepSeekChunk, and forwards each one to the client as an
-// OpenAI chat.completion.chunk SSE event.
+// deltas, and forwards them to the client as OpenAI chat.completion.chunk
+// events.
+//
+// When toolMode is true the entire response is buffered, parsed for
+// <tool_call> blocks, and emitted as either a single tool_calls delta
+// (if any tools were called) or as a regular content block. Streaming with
+// tools is intentionally degenerate-to-buffered for v1 simplicity; OpenCode
+// and similar agents don't depend on token-by-token streaming during tool
+// invocation.
 func translateStream(
 	ctx context.Context,
 	upstream *http.Response,
 	sse *openai.SSEWriter,
 	requestedModel string,
+	toolMode bool,
 ) error {
 	defer upstream.Body.Close()
 
@@ -40,8 +50,13 @@ func translateStream(
 	}
 
 	state := &streamState{}
-	finishStr := "stop"
+	stopFinish := "stop"
+	toolFinish := "tool_calls"
 	roleSent := false
+
+	// In tool mode we accumulate everything; we'll decide at the end whether
+	// to emit a tool_calls delta or normal content.
+	var buffered strings.Builder
 
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -64,21 +79,19 @@ func translateStream(
 		}
 
 		if result.Finished {
-			// Emit the terminating chunk with finish_reason=stop.
-			chunk.Choices[0].Delta = openai.ChunkDelta{}
-			chunk.Choices[0].FinishReason = &finishStr
-			if err := sse.WriteChunk(chunk); err != nil {
-				return fmt.Errorf("write final chunk: %w", err)
-			}
-			sse.WriteDone()
-			return nil
+			break
 		}
 
 		if result.Delta == "" {
 			continue
 		}
 
-		// First content chunk also carries the assistant role per OpenAI spec.
+		if toolMode {
+			buffered.WriteString(result.Delta)
+			continue
+		}
+
+		// Pass-through streaming for non-tool requests.
 		if !roleSent {
 			chunk.Choices[0].Delta = openai.ChunkDelta{Role: "assistant", Content: result.Delta}
 			roleSent = true
@@ -99,10 +112,78 @@ func translateStream(
 		return fmt.Errorf("read upstream stream: %w", err)
 	}
 
-	// Stream ended without an explicit FINISHED — emit a synthetic stop.
+	if !toolMode {
+		// Plain finish.
+		chunk.Choices[0].Delta = openai.ChunkDelta{}
+		chunk.Choices[0].FinishReason = &stopFinish
+		_ = sse.WriteChunk(chunk)
+		sse.WriteDone()
+		return nil
+	}
+
+	// Tool mode: parse the buffered content for <tool_call> blocks.
+	cleanContent, toolCalls := extractToolCalls(buffered.String())
+
+	if len(toolCalls) == 0 {
+		// No tools — emit the whole thing as one assistant content delta.
+		if cleanContent != "" {
+			chunk.Choices[0].Delta = openai.ChunkDelta{Role: "assistant", Content: cleanContent}
+			chunk.Choices[0].FinishReason = nil
+			if err := sse.WriteChunk(chunk); err != nil {
+				return fmt.Errorf("write content delta: %w", err)
+			}
+		}
+		chunk.Choices[0].Delta = openai.ChunkDelta{}
+		chunk.Choices[0].FinishReason = &stopFinish
+		_ = sse.WriteChunk(chunk)
+		sse.WriteDone()
+		return nil
+	}
+
+	// Emit any pre-tool reasoning text first (if model included some).
+	if cleanContent != "" {
+		chunk.Choices[0].Delta = openai.ChunkDelta{Role: "assistant", Content: cleanContent}
+		chunk.Choices[0].FinishReason = nil
+		if err := sse.WriteChunk(chunk); err != nil {
+			return fmt.Errorf("write content delta: %w", err)
+		}
+		roleSent = true
+	}
+
+	// Emit each tool_call as a streaming delta.
+	for i, tc := range toolCalls {
+		delta := openai.ChunkDelta{}
+		if !roleSent && i == 0 {
+			delta.Role = "assistant"
+			roleSent = true
+		}
+		delta.ToolCalls = []openai.ChunkToolCall{{
+			Index: i,
+			ID:    tc.ID,
+			Type:  tc.Type,
+			Function: openai.ChunkToolCallFunc{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		}}
+		chunk.Choices[0].Delta = delta
+		chunk.Choices[0].FinishReason = nil
+		if err := sse.WriteChunk(chunk); err != nil {
+			return fmt.Errorf("write tool_call delta: %w", err)
+		}
+	}
+
+	// Final terminator chunk with finish_reason=tool_calls.
 	chunk.Choices[0].Delta = openai.ChunkDelta{}
-	chunk.Choices[0].FinishReason = &finishStr
+	chunk.Choices[0].FinishReason = &toolFinish
 	_ = sse.WriteChunk(chunk)
 	sse.WriteDone()
 	return nil
+}
+
+// debugDumpRequest is a helper kept in case we want to log the OpenAI request
+// shape during development. Not wired in by default.
+func debugDumpRequest(req any) string {
+	b, _ := json.Marshal(req)
+	return string(b)
 }
